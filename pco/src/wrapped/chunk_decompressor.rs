@@ -68,11 +68,11 @@ impl<T: Number> ChunkDecompressor<T> {
   ///
   /// Will return an error if corruptions or insufficient data are found.
   ///
-  /// Even though this takes `&mut self`, the page decompressor only mutates the
-  /// chunk decompressor's scratch buffers and has no effect on the
-  /// decompression of later pages.
+  /// Takes `&self`: all per-page state, including scratch buffers, lives in
+  /// the page decompressor, so pages of one chunk can be decompressed
+  /// concurrently from a shared `ChunkDecompressor`.
   pub fn page_decompressor<R: BetterBufRead>(
-    &mut self,
+    &self,
     src: R,
     n: usize,
   ) -> PcoResult<PageDecompressor<'_, T, R>> {

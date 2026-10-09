@@ -1,7 +1,6 @@
 use crate::ans::{self, Spec};
 use crate::constants::Bitlen;
 use crate::data_types::Latent;
-use crate::dyn_slices::DynLatentSlice;
 use crate::errors::PcoResult;
 use crate::macros::{define_latent_enum, match_latent_enum};
 use crate::metadata::delta_encoding::LatentVarDeltaEncoding;
@@ -23,7 +22,32 @@ pub struct ChunkLatentDecompressor<L: Latent> {
   pub state_lowers: Vec<L>,
   pub n_bins: usize,
   pub decoder: ans::Decoder,
-  pub scratch: ChunkLatentDecompressorScratch<L>,
+  pub only_bin: Option<Bin<L>>,
+}
+
+impl<L: Latent> ChunkLatentDecompressorScratch<L> {
+  pub fn new(cld: &ChunkLatentDecompressor<L>) -> Box<Self> {
+    let mut offset_bits_csum = ScratchArray([0; FULL_BATCH_N]);
+    let mut offset_bits = ScratchArray([0; FULL_BATCH_N]);
+    let mut latents = ScratchArray([L::ZERO; FULL_BATCH_N]);
+
+    if let Some(bin) = &cld.only_bin {
+      // we optimize performance by setting state once per page and never again
+      let mut csum = 0;
+      for i in 0..FULL_BATCH_N {
+        offset_bits[i] = bin.offset_bits;
+        offset_bits_csum[i] = csum;
+        latents[i] = bin.lower;
+        csum += bin.offset_bits;
+      }
+    }
+
+    Box::new(Self {
+      offset_bits_csum,
+      offset_bits,
+      latents,
+    })
+  }
 }
 
 impl<L: Latent> ChunkLatentDecompressor<L> {
@@ -45,32 +69,13 @@ impl<L: Latent> ChunkLatentDecompressor<L> {
 
     let only_bin = if bins.len() == 1 { Some(bins[0]) } else { None };
 
-    let mut offset_bits_csum = ScratchArray([0; FULL_BATCH_N]);
-    let mut offset_bits = ScratchArray([0; FULL_BATCH_N]);
-    let mut latents = ScratchArray([L::ZERO; FULL_BATCH_N]);
-
-    if let Some(bin) = &only_bin {
-      // we optimize performance by setting state once and never again
-      let mut csum = 0;
-      for i in 0..FULL_BATCH_N {
-        offset_bits[i] = bin.offset_bits;
-        offset_bits_csum[i] = csum;
-        latents[i] = bin.lower;
-        csum += bin.offset_bits;
-      }
-    }
-
     Ok(Box::new(Self {
       bytes_per_offset,
       state_lowers,
       n_bins: bins.len(),
       decoder,
       delta_encoding,
-      scratch: ChunkLatentDecompressorScratch {
-        offset_bits_csum,
-        offset_bits,
-        latents,
-      },
+      only_bin,
     }))
   }
 }
@@ -100,14 +105,5 @@ impl DynChunkLatentDecompressor {
       }
     );
     Ok(res)
-  }
-
-  pub fn latents<'a>(&'a mut self) -> DynLatentSlice<'a> {
-    match_latent_enum!(
-      self,
-      DynChunkLatentDecompressor<L>(inner) => {
-        DynLatentSlice::new(&*inner.scratch.latents)
-      }
-    )
   }
 }
